@@ -1,0 +1,97 @@
+#!/bin/bash
+#
+# The multi-bundler. Creates CloudOs app bundles for every app found within a directory hierarchy.
+#
+# Usage:
+#   mcbundle [debug [<port>]] path/to/apps/dir [-u] [-p] [-P publisher-name]
+#
+# The path supplied will be scanned for subdirectories that contain cloudos-manifest.json file.
+# The CloudOs Bundler will be run on each app.
+#
+# Other options:
+# -u  / --upload      upload the bundle to the appstore.
+# -p  / --publish     option to upload and publish the bundle in the appstore. Implies -u
+# -P  / --publisher   use this publisher name when uploading and publishing in the app store
+#
+# If using either the -u or -p option, you will need to define credentials in ~/.cbundler.json, or define
+# the CBUNDLER_APPSTORE_CREDENTIALS environment variable to be the path to a valid JSON credentials file.
+#
+# Here's an example ~/.cbundler.json file:
+#
+#    { "user": "yourusername", "password": "yourpassword", "base_uri": "https://appstore-server/appstore" }
+#
+# To attach a debugger to the bundler, supply 'debug' as the first argument, optionally followed by a port number.
+# The default debug port is 5005
+#
+# To override the location of the bundler jar file, set the CLOUDOS_BUNDLER_JAR environment variable.
+#
+
+function die () {
+  echo 1>&2 "${1}"
+  exit 1
+}
+
+SCRIPT_BASE=$(cd $(dirname $0) && pwd)
+
+debug="${1}"
+if [ "x${debug}" = "xdebug" ] ; then
+  shift
+  ARG_LEN=$(echo -n "${1}" | wc -c)
+  ARG_NUMERIC_LEN=$(echo -n "${1}" | tr -dc [:digit:] | wc -c)  # strip all non-digits
+  if [ ${ARG_LEN} -eq ${ARG_NUMERIC_LEN} ] ; then
+    # Second arg is the debug port
+    DEBUG_PORT="${1}"
+    shift
+  else
+    DEBUG_PORT=5005
+  fi
+  debug="-Xdebug -Djava.compiler=NONE -Xrunjdwp:transport=dt_socket,server=y,suspend=y,address=${DEBUG_PORT}"
+else
+  debug=""
+fi
+
+APP_BASE=${1}
+if [ -z "${APP_BASE}" ] ; then
+  die "No app dir specified"
+fi
+APP_BASE=$(cd ${APP_BASE} && pwd)
+
+# Remaining arguments go straight to the bundler
+shift
+BUNDLER_OPTS="$@"
+
+# Find bundler jar.
+BUNDLER_JAR="not-found"
+if [ ! -z "${CLOUDOS_BUNDLER_JAR}" ] ; then
+  if [ -r "${CLOUDOS_BUNDLER_JAR}" ] ; then
+    BUNDLER_JAR="${CLOUDOS_BUNDLER_JAR}"
+  else
+    die "CLOUDOS_BUNDLER_JAR env var was set, but doesn't seem to be valid: ${CLOUDOS_BUNDLER_JAR}"
+  fi
+
+else
+  BUNDLER_JAR="${SCRIPT_BASE}/lib/cloudos-app-bundler.jar"
+fi
+
+
+case "${BUNDLER_JAR}" in
+  not-found)
+    die "Multi-bundler jar could not be located"
+  ;;
+
+  use-maven)
+    echo 1>&2 "Running maven multi-bundler with options: ${APP_BASE}"
+    cd ${SCRIPT_BASE}/../appstore-common && \
+    MAVEN_OPTS="${debug} ${MAVEN_OPTS}" mvn exec:java \
+      -Dexec.mainClass=cloudos.appstore.bundler.MultiBundlerMain \
+      -Dexec.args="${APP_BASE} ${BUNDLER_OPTS}"
+    exit $?
+  ;;
+
+  *)
+    # we have a jar file, use it
+    echo 1>&2 "Running jar multi-bundler with options: ${APP_BASE}"
+    java ${debug} -cp ${BUNDLER_JAR} cloudos.appstore.bundler.MultiBundlerMain ${APP_BASE} ${BUNDLER_OPTS}
+    exit $?
+  ;;
+esac
